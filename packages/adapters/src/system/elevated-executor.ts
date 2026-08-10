@@ -1,0 +1,148 @@
+import type { CommandExecutor, LogEntry } from "../types";
+import { resolveEnvironment } from "./environment";
+import { sq } from "./local-shell";
+
+// apt/dpkg non-interactive env, re-set INSIDE the sudo'd root shell. sudo
+// resets the environment and many sudoers configs reject -E / --preserve-env,
+// so exporting it here (rather than relying on the outer executor ENV_PREFIX,
+// which runs before sudo) is what keeps apt from prompting under root.
+const INSTALL_ENV = "DEBIAN_FRONTEND=noninteractive DPKG_FORCE=confnew";
+
+/** Wrap an arbitrary (possibly compound) command so it runs as root via
+ *  passwordless sudo. `-n` fails fast instead of blocking on a password. */
+export function elevateCommand(command: string): string {
+  return `sudo -n sh -c ${sq(`export ${INSTALL_ENV}; ${command}`)}`;
+}
+
+/** Parent directory of an absolute path (for `mkdir -p` before a move). POSIX-only
+ *  by contract — these are remote host paths, never native-joined. */
+export function dirOf(path: string): string {
+  const idx = path.lastIndexOf("/");
+  if (idx < 0) return ".";
+  return idx === 0 ? "/" : path.slice(0, idx);
+}
+
+/**
+ * Decorate a CommandExecutor so every privileged operation runs through
+ * `sudo -n`. Construct this ONLY for a target that is non-root WITH passwordless
+ * sudo (environment.ts `canSudo`) — it elevates unconditionally.
+ *
+ * Overrides just the mutating methods the component install/remove path uses
+ * (exec, streamExec, writeFile, rename, mkdir, rm). Reads and transfers pass straight
+ * through to the inner executor — files under /etc are world-readable and the
+ * install path never transfers into a privileged path — keeping the sudo
+ * surface minimal. A Proxy forwards every other (optional) executor method
+ * (rawExec, forwardPort, openShell, onDisconnect, …) transparently.
+ */
+export function elevatedExecutor(inner: CommandExecutor): CommandExecutor {
+  const writeFileElevated = async (path: string, content: string): Promise<void> => {
+    // Stage into a user-writable temp, then move into place as root — avoids
+    // piping large config/Lua content through the command line.
+    const tmp = `/tmp/.openship-elev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    await inner.writeFile(tmp, content);
+    await inner.exec(
+      elevateCommand(`mkdir -p ${sq(dirOf(path))} && mv -f ${sq(tmp)} ${sq(path)}`),
+    );
+  };
+
+  const overrides: Partial<CommandExecutor> = {
+    exec: (command: string, opts?: { timeout?: number }) =>
+      inner.exec(elevateCommand(command), opts),
+    streamExec: (command: string, onLog: (log: LogEntry) => void, opts?: { signal?: AbortSignal }) =>
+      inner.streamExec(elevateCommand(command), onLog, opts),
+    writeFile: writeFileElevated,
+    // Elevated for the same reason as writeFile: the vhost/conf dirs are root-owned,
+    // and the Proxy would otherwise forward this to the inner executor unelevated —
+    // EACCES immediately after an elevated write succeeded.
+    rename: async (from: string, to: string) => {
+      await inner.exec(elevateCommand(`mv -f ${sq(from)} ${sq(to)}`));
+    },
+    mkdir: async (path: string) => {
+      await inner.exec(elevateCommand(`mkdir -p ${sq(path)}`));
+    },
+    rm: async (path: string) => {
+      await inner.exec(elevateCommand(`rm -rf ${sq(path)}`));
+    },
+  };
+
+  return new Proxy(inner, {
+    get(target, prop) {
+      if (Object.prototype.hasOwnProperty.call(overrides, prop)) {
+        return (overrides as Record<string | symbol, unknown>)[prop];
+      }
+      // Bind to the REAL inner (not the proxy) so delegated methods never
+      // re-enter the elevation layer.
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
+/**
+ * Ensure `path` exists and the login user can write into it.
+ *
+ * Openship's host directories sit under `/opt`, which no non-root user may
+ * create in, and the ones Docker materialises for a bind mount are created by
+ * the daemon and so are root-owned. A plain `mkdir -p` fails on both, which is
+ * why this elevates and then hands the result over rather than only creating it.
+ *
+ * The chown targets the TOPMOST directory that had to be created, not `path`:
+ * renaming an entry needs write permission on its parent, so a leaf-only chown
+ * would still leave a later `mv` failing. When nothing had to be created — `path`
+ * exists but isn't ours — the leaf is the best available target; a caller that
+ * will RENAME `path` must therefore ensure `dirOf(path)`, not `path`.
+ */
+export async function ensureOwnedDir(executor: CommandExecutor, path: string): Promise<void> {
+  const quoted = sq(path);
+  try {
+    await executor.exec(`mkdir -p ${quoted} && [ -w ${quoted} ]`);
+    return;
+  } catch {
+    // Absent and uncreatable, or present and not ours — both need root.
+  }
+
+  const { isRoot, canSudo } = await resolveEnvironment(executor);
+  if (isRoot) {
+    await executor.exec(`mkdir -p ${quoted}`);
+    return;
+  }
+  if (!canSudo) {
+    throw new Error(
+      `Cannot create ${path} on the target server: the deploy user cannot write there and has no ` +
+        `passwordless sudo. Run these once on the server, then redeploy:\n` +
+        `  sudo mkdir -p ${path}\n` +
+        `  sudo chown -R "$(id -un)" ${path}`,
+    );
+  }
+  // Who to hand the tree to. `$SUDO_USER` is sudo's own answer, but a sudoers
+  // `env_delete` can strip it, and there is no safe in-shell default: root would
+  // leave the deploy user still unable to write — the fast path above would then
+  // re-elevate on every deploy and the real write would fail anyway — while an
+  // empty expansion makes `chown -R "" …` the thing that errors. So ask the
+  // UNELEVATED executor, which is the login we actually need, and keep
+  // `$SUDO_USER` only as a last resort so an empty owner still fails loudly.
+  const loginUser = await executor
+    .exec("id -un")
+    .then((out) => out.trim())
+    .catch(() => "");
+  const owner = loginUser ? sq(loginUser) : '"$SUDO_USER"';
+
+  await executor.exec(
+    elevateCommand(
+      [
+        // Without it the `;`-joined steps fall through a failed mkdir, and the
+        // chown's exit status — not the mkdir's — is what the caller sees. That
+        // reported a permission failure as success.
+        "set -e",
+        `p=${quoted}`,
+        "d=$p",
+        "top=",
+        'while [ ! -d "$d" ]; do top=$d; d=$(dirname "$d"); done',
+        'mkdir -p "$p"',
+        // Expansion, not `[ -z "$top" ] && top=…`: that AND-list returns 1 whenever
+        // $top is already set, which under `set -e` would exit before the chown.
+        `chown -R ${owner} "\${top:-$p}"`,
+      ].join("; "),
+    ),
+  );
+}
