@@ -2,7 +2,7 @@
   "name": "openship",
   "version": "0.6.1",
   "description": "Openship CLI - deploy, manage, and open your Openship platform from the terminal",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/oblien/openship.git",

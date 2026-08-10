@@ -30,7 +30,7 @@ const MODELS = [
       "No agent or dashboard on your boxes",
     ],
     price: "Free & open-source",
-    priceNote: "Apache-2.0 — self-host today, no billing",
+    priceNote: "MIT — self-host today, no billing",
     feature: true,
   },
   {

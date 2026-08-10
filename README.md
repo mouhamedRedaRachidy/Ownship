@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/openship"><img src="https://img.shields.io/npm/v/openship?color=0b7285&label=npm" alt="npm version" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License" /></a>
   <a href="https://openship.io"><img src="https://img.shields.io/badge/website-openship.io-0b7285" alt="Website" /></a>
 </p>
 
@@ -248,8 +248,8 @@ first reports.
 
 ## License
 
-Openship is **open-source** software, licensed under the [Apache License 2.0](LICENSE).
+Ownship is **open-source** software, licensed under the [MIT License](LICENSE).
 
 You may use, run, modify, self-host, and distribute it — including in commercial
-and closed-source products — under the terms of the Apache 2.0 license. See
+and closed-source products — under the terms of the MIT license. See
 [LICENSE](LICENSE) for the full text.

@@ -91,12 +91,12 @@ export default function AboutPage() {
                     <h2 className="legal-section-title">Open source</h2>
                   </header>
                   <p className="legal-p">
-                    Openship is open-source software under the{" "}
-                    <a href="https://github.com/oblien/openship/blob/main/LICENSE" target="_blank" rel="noreferrer">
-                      Apache License 2.0
+                    Ownship is open-source software under the{" "}
+                    <a href="https://github.com/mouhamedRedaRachidy/Ownship/blob/main/LICENSE" target="_blank" rel="noreferrer">
+                      MIT License
                     </a>
                     . The dashboard, CLI, agents, and infrastructure adapters are all public and auditable on{" "}
-                    <a href="https://github.com/oblien/openship" target="_blank" rel="noreferrer">GitHub</a>.
+                    <a href="https://github.com/mouhamedRedaRachidy/Ownship" target="_blank" rel="noreferrer">GitHub</a>.
                   </p>
                   <p className="legal-p">
                     Every deployment is a standard Docker container with standard manifests — no proprietary
